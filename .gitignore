@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# to ignore a folder named "resources_from_superisors".
+resources_from_supervisors/
