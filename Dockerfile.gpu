@@ -1,0 +1,29 @@
+# =====================================================================
+# rainnow - GPU training image (CUDA). Used on AAU AI-Lab through Singularity/Apptainer:
+#
+#   docker build -f Dockerfile.gpu -t <dockerhub-user>/rainnow:gpu .
+#   docker push <dockerhub-user>/rainnow:gpu
+#   (on AI-Lab)  srun singularity pull rainnow.sif docker://<dockerhub-user>/rainnow:gpu
+#
+# Alternatively build directly on AI-Lab from src/ailab/rainnow.def (no Docker needed).
+# =====================================================================
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app/src \
+    AWS_DEFAULT_REGION=eu-north-1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt requirements-optional.txt ./
+RUN python -m pip install -r requirements.txt \
+    && (python -m pip install -r requirements-optional.txt || echo "pysteps not installed (optional)")
+
+COPY src ./src
+ENTRYPOINT ["python", "src/run.py"]
+CMD ["--help"]
