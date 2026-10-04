@@ -1,0 +1,160 @@
+# =====================================================================
+# rainnow — default configuration (full run, e.g. on AAU AI-Lab)
+# Override any value on the command line:  --set deep.epochs=5
+# =====================================================================
+seed: 42
+
+paths:
+  data: data          # relative to repo root (or absolute); env RAINNOW_DATA overrides
+  results: results    # env RAINNOW_RESULTS overrides
+
+s3:
+  region: eu-north-1
+  station_bucket: tica93-dmi-all-stations
+  radar_bucket: tica93-dmi-radar-cache
+  station_csv_suffix: "_10min_DMI_2020_2025.csv"
+  metadata_key: station_metadata/stations_metObs_v1.csv
+  lookup_key: stations_xy_lookup.csv
+  overlap_prefix: ml_pipeline/00_raw/station_1min_overlap
+  radar_prefix: pseudoCappi
+  # published supervisor baseline metrics (for the "as published" table)
+  published_metrics:
+    - [tica93-dmi-all-stations, model_outputs_global/all_metrics.csv]
+    - [tica93-dmi-all-stations, model_outputs_global_filtered/metrics_global_year_filtered.csv]
+    - [tica93-dmi-all-stations-regresion, model_outputs_hybrid_step11/summary_all_months.csv]
+  workers: 16
+
+stations:
+  include: []                  # empty = every station found
+  exclude_prefixes: ["04"]     # Greenland stations
+  bbox: [7.5, 54.4, 15.5, 58.0]  # lon_min, lat_min, lon_max, lat_max (Denmark)
+
+truth:
+  p1_max_mm: 5.0               # > 5 mm/min is treated as a sensor error
+  p10_max_mm: 50.0
+  # 1-min and 10-min series are separate gauge products with 0.1 mm resolution (tipping bucket):
+  # 99.6 % of complete rainy windows agree within 2 tips (measured on 2025 data)
+  mass_tol_abs_mm: 0.21
+  mass_tol_rel: 0.20
+  dry_tol_mm: 0.11             # a 10-min total of 0 still accepts one 0.1 mm tip in the 1-min series
+  tip_mm: 0.1                  # harmonise 0.01 mm gauges (some stations 2021-23) to 0.1 mm tips
+  # station-year quality gates used to select benchmark station-years
+  min_valid_frac: 0.5
+  min_rain_coverage: 0.8
+  mass_ratio_range: [0.8, 1.25]
+  min_rain_windows: 50
+
+channels:
+  met_max_age_min: 30
+  neighbour_rings_km: [25, 60]
+  wind_radius_km: 60
+  pad_minutes: 240             # history prepended when loading a period
+
+features:
+  lags: 10
+  roll_windows: [5, 10, 30, 60]
+
+splits:
+  A:
+    train: ["2020-01-01", "2024-01-01"]
+    val:   ["2024-01-01", "2025-01-01"]
+    test:  ["2025-01-01", "2025-12-01"]
+  B:
+    train: ["2025-06-06", "2025-09-01"]
+    val:   ["2025-09-01", "2025-10-01"]
+    test:  ["2025-10-01", "2025-12-04"]
+
+sampling:
+  dry_keep_frac: 0.03          # random share of "far from rain" training rows kept
+  context_minutes: 120         # a row is "near rain" if rain within this window (station or neighbours)
+  max_train_rows: 30000000
+
+models:
+  baselines: [zero, climatology, persistence, persistence_decay, moving_average]
+  linear: [logistic_hurdle]
+  gbm:
+    variants: [lgbm_hurdle, lgbm_tweedie, lgbm_supervisor_features]
+    ablation_groups:            # one hurdle model per entry (feature groups, see features.py)
+      gbm_abl_P: [P]
+      gbm_abl_PT: [P, T]
+      gbm_abl_PM: [P, M, T]
+      gbm_abl_PN: [P, N, T]
+    params:
+      learning_rate: 0.05
+      num_leaves: 63
+      min_data_in_leaf: 200
+      feature_fraction: 0.8
+      bagging_fraction: 0.8
+      bagging_freq: 1
+      lambda_l2: 1.0
+      verbosity: -1
+      num_threads: 0
+    num_boost_round: 3000
+    early_stopping: 100
+    tweedie_power: 1.3
+    shap_rows: 200000
+  ssm: [kalman_ll, kalman_llt, kalman_x, hmm_switch]
+  ssm_fit_rows: 3000000
+  hmm_states: 3
+  hmm_em_iters: 30
+
+deep:
+  # SAMBA first (supervisor priority), its two ablations, then the comparison field
+  models: [samba, samba_nonlinear, samba_temporal_only, mamba, s4d, gru, tcn, patchtst]
+  models_B: [samba, mamba, gru]       # each trained station-only and with radar channels on benchmark B
+  window: 120
+  batch_size: 1024
+  batch_size_by_model: {samba: 256, samba_nonlinear: 256, samba_temporal_only: 256, patchtst: 256, mamba: 512}
+  # channel-independent models (SAMBA, PatchTST) process batch x channels sequences
+  eval_batch_size_by_model: {samba: 1024, samba_nonlinear: 1024, samba_temporal_only: 1024, patchtst: 1024, mamba: 2048}
+  expand: 2
+  eval_batch_size: 8192
+  epochs: 20
+  max_steps_per_epoch: 3000
+  val_steps: 300
+  patience: 4
+  lr: 0.001
+  weight_decay: 0.01
+  d_model: 64
+  n_layers: 2
+  d_state: 16
+  patch_len: 12
+  patch_stride: 6
+  dropout: 0.1
+  loss_weights: {bce: 1.0, amount: 0.2, quantile: 0.2}   # balanced so P(rain) learning is not drowned
+  device: auto                 # auto | cpu | cuda
+  num_threads: 8
+  store_dtype: float32
+
+radar:
+  sites: [ekrn, eksm, eksn, ekxr, ekxs]
+  latency_min: 5               # minutes between scan time and product availability
+  composite_res_km: 1.0
+  composite_half_size_km: 260
+  composite_center: [10.6, 56.1]   # lon, lat (gnomonic centre)
+  max_lead_min: 25
+  wet_mmh: 0.1
+  use_pysteps: auto            # auto | true | false (pysteps optical flow if importable)
+  workers: 8
+
+evaluation:
+  intensity_thresholds_mmh: [2.5, 10.0]
+  bootstrap: 500
+  reference_model: persistence
+  primary: csi_rain
+
+attenuation:
+  rain_height_km: 2.6          # ITU-R P.839 rain height for Denmark (h0 + 0.36 km)
+  margins_db: [3, 5, 10]
+  terrestrial:
+    - {name: "23GHz_2km_V", f_ghz: 23, d_km: 2.0, pol: V}
+    - {name: "38GHz_1km_V", f_ghz: 38, d_km: 1.0, pol: V}
+    - {name: "80GHz_0.5km_H", f_ghz: 80, d_km: 0.5, pol: H}
+  earth_space:
+    - {name: "Ka20GHz_sat_el25", f_ghz: 20, elevation_deg: 25, pol: circular, station_height_km: 0.05}
+
+deploy:
+  model: auto                  # auto = best deployable model from evaluation, or a model name
+  benchmark: A
+  history_minutes: 240
+  dmi_url: "https://opendataapi.dmi.dk/v2/metObs/collections/observation/items"

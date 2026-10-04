@@ -1,0 +1,4 @@
+# Optional: PySTEPS optical-flow nowcast for benchmark B (adds nowcast_pysteps_* features).
+# Builds on Python <= 3.12 (installed in the Docker / AI-Lab images, not needed for the rest).
+pysteps>=1.10
+opencv-python-headless>=4.9

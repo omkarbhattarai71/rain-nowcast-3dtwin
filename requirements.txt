@@ -1,0 +1,19 @@
+# Core runtime (pipeline + serving). PyTorch is installed separately (CPU or CUDA build), see Dockerfile.
+boto3>=1.35
+requests>=2.32
+python-dotenv>=1.0
+pyyaml>=6.0
+numpy>=1.26
+pandas>=2.2
+pyarrow>=16
+scipy>=1.13
+scikit-learn>=1.5
+joblib>=1.4
+lightgbm>=4.5
+matplotlib>=3.8
+h5py>=3.11
+pyproj>=3.6
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+pytest>=8.0

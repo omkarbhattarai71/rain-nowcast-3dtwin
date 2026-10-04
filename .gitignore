@@ -219,3 +219,15 @@ __marimo__/
 
 # to ignore a folder named "resources_from_superisors".
 resources_from_supervisors/
+# rainnow pipeline artefacts (large / regenerated)
+data/
+data_smoke/
+results/
+results_smoke/
+logs/
+*.log
+*.sif
+src/.env
+
+-
+data/

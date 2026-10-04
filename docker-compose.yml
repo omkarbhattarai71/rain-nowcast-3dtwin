@@ -1,0 +1,39 @@
+# docker compose build
+# docker compose run --rm pipeline all --config smoke        # pipeline (any run.py arguments)
+# docker compose up api                                       # serve the trained model on :8000
+# docker compose run --rm feeder                              # replay recorded data through the API
+x-common: &common
+  env_file:
+    - .env
+  environment:
+    AWS_DEFAULT_REGION: eu-north-1
+    RAINNOW_CONFIG: ${RAINNOW_CONFIG:-}
+  volumes:
+    - ./data:/app/data
+    - ./results:/app/results
+    - ./data_smoke:/app/data_smoke
+    - ./results_smoke:/app/results_smoke
+
+services:
+  pipeline:
+    <<: *common
+    build:
+      context: .
+      target: pipeline
+    image: rainnow:pipeline
+
+  api:
+    <<: *common
+    build:
+      context: .
+      target: serve
+    image: rainnow:serve
+    ports:
+      - "8000:8000"
+
+  feeder:
+    <<: *common
+    image: rainnow:serve
+    depends_on:
+      - api
+    command: ["python", "src/deploy/feeder.py", "replay", "--api", "http://api:8000", "--minutes", "120", "--speed", "30"]

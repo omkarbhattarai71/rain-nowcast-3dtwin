@@ -1,0 +1,24 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+%files
+    requirements.txt /opt/rainnow/requirements.txt
+    requirements-optional.txt /opt/rainnow/requirements-optional.txt
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+    python -m pip install --no-cache-dir -r /opt/rainnow/requirements.txt
+    python -m pip install --no-cache-dir -r /opt/rainnow/requirements-optional.txt || echo "pysteps optional: skipped"
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export AWS_DEFAULT_REGION=eu-north-1
+
+%runscript
+    exec python src/run.py "$@"
+
+%help
+    rainnow training container. Build on AI-Lab from the repository root:
+        srun --mem=32G --cpus-per-task=8 singularity build --fakeroot rainnow.sif src/ailab/rainnow.def
+    Run:
+        srun --gres=gpu:1 singularity exec --nv rainnow.sif python src/run.py step09_deep --bench A
