@@ -99,4 +99,3 @@ def xyw(df: pd.DataFrame):
 
 def feature_columns(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c not in ("station_id", "y", "w", "rain_now")]
-

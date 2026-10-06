@@ -1,12 +1,16 @@
 # rain-nowcast-3dtwin
+Minute‑Ahead Rainfall Nowcasting for Rain‑Aware 3D Network Digital Twins
 
-Minute-ahead rainfall nowcasting for rain-aware 3D network digital twins (AAU, semester III).
+# To authenticate github 
+ssh -T -p 443 git@ssh.github.com
+
+# Minute-ahead rainfall nowcasting for rain-aware 3D network digital twins (AAU, semester III).
 
 The pipeline predicts the rain in the **next minute** at DMI weather stations, compares
 state-space models (classical Kalman/HMM and the Mamba-based **SAMBA**) with persistence,
 LightGBM, GRU/TCN/PatchTST and hybrids, tests whether **radar / PySTEPS-style nowcasts** help,
 converts forecasts to **link attenuation** (ITU-R P.838/P.530/P.618) and serves the best model
-as a **real-time API**. Design and rationale: [ProjectPlan.md](ProjectPlan.md).
+as a **real-time API**.
 
 ```
 src/
@@ -124,4 +128,3 @@ curl -X POST localhost:8000/observations -H "Content-Type: application/json" \
 curl "localhost:8000/forecast?station_id=05065"
 ```
 
-Credentials are never baked into images or committed; `.env`, `data/` and `results/` are git-ignored.
