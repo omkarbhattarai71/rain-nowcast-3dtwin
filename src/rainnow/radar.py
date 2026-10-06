@@ -69,32 +69,47 @@ class Composite:
         self.xc, self.yc = np.meshgrid(c, c[::-1])           # row 0 = north
         self.lon, self.lat = self.inv.transform(self.xc, self.yc)
         self.half = half
-        self.site_maps: dict[str, np.ndarray] = {}
-        self.site_dist: dict[str, np.ndarray] = {}
+        self.site_maps: dict[tuple, np.ndarray] = {}
+        self.site_dist: dict[tuple, np.ndarray] = {}
+        self.site_shape: dict[tuple, tuple[int, int]] = {}
 
-    def add_site(self, site: str, where: dict) -> None:
+    def add_site(self, site: str, where: dict) -> tuple:
+        """Index map for one radar grid. A site can change grid (e.g. 960x960 at 500 m and
+        480x480 at 1 km), so maps are cached per (site, grid geometry), not per site."""
         from pyproj import Transformer
 
-        if site in self.site_maps:
-            return
+        nx, ny = int(where.get("xsize", 960)), int(where.get("ysize", 960))
+        key = (site, nx, ny, float(where["xscale"]), float(where["yscale"]),
+               round(float(where["LL_lon"]), 6), round(float(where["LL_lat"]), 6), str(where["projdef"]))
+        if key in self.site_maps:
+            return key
         tr = Transformer.from_crs("EPSG:4326", where["projdef"], always_xy=True)
         x0, y0 = tr.transform(float(where["LL_lon"]), float(where["LL_lat"]))
         xs, ys = float(where["xscale"]), float(where["yscale"])
-        nx, ny = int(where.get("xsize", 960)), int(where.get("ysize", 960))
         x, y = tr.transform(self.lon, self.lat)
         ix = np.floor((x - x0) / xs).astype(int)
         iy = (ny - 1) - np.floor((y - y0) / ys).astype(int)
         inside = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
-        self.site_maps[site] = np.where(inside, iy * nx + ix, -1)
+        self.site_maps[key] = np.where(inside, iy * nx + ix, -1)
+        self.site_shape[key] = (ny, nx)
         m = re.search(r"lon_0=([-\d.]+).*lat_0=([-\d.]+)", where["projdef"])
         slon, slat = float(m.group(1)), float(m.group(2))
         from .stations import haversine_km
 
-        self.site_dist[site] = np.where(inside, haversine_km(self.lon, self.lat, slon, slat), np.inf)
+        self.site_dist[key] = np.where(inside, haversine_km(self.lon, self.lat, slon, slat), np.inf)
+        return key
 
-    def merge(self, site_fields: dict[str, np.ndarray]) -> np.ndarray:
-        """Nearest-radar composite: per cell, the closest radar that has data."""
-        sites = [s for s in site_fields if s in self.site_maps]
+    def merge(self, site_fields: dict[tuple, np.ndarray]) -> np.ndarray:
+        """Nearest-radar composite: per cell, the closest radar that has data.
+
+        site_fields is keyed by the grid key returned from add_site; a field whose shape does not
+        match its grid (corrupt or mislabelled file) is skipped instead of crashing the day."""
+        sites = [s for s in site_fields
+                 if s in self.site_maps and site_fields[s].shape == self.site_shape[s]]
+        for s in site_fields:
+            if s not in sites:
+                log.warning("radar field %s has shape %s, grid expects %s: skipped",
+                            s[0], site_fields[s].shape, self.site_shape.get(s))
         if not sites:
             return np.full((self.n, self.n), np.nan, "float32")
         V = np.full((len(sites), self.n, self.n), np.nan, "float32")
@@ -186,8 +201,8 @@ def _sample(field: np.ndarray, r: float, c: float, k: int = 1) -> float:
     ri, ci = int(round(r)), int(round(c))
     if ri - k < 0 or ci - k < 0 or ri + k >= n or ci + k >= n:
         return np.nan
-    with np.errstate(all="ignore"):
-        return float(np.nanmean(field[ri - k:ri + k + 1, ci - k:ci + k + 1]))
+    win = field[ri - k:ri + k + 1, ci - k:ci + k + 1]
+    return float(np.nanmean(win)) if np.isfinite(win).any() else np.nan
 
 
 # --------------------------------------------------------------------------- per-scan features
@@ -280,8 +295,10 @@ def process_day(day: date, cfg, stab: pd.DataFrame) -> pd.DataFrame:
             except Exception as exc:  # noqa: BLE001
                 log.warning("bad radar file %s: %s", key, exc)
                 continue
-            comp_grid.add_site(site, where)
-            fields[site] = rain
+            try:
+                fields[comp_grid.add_site(site, where)] = rain
+            except (KeyError, ValueError, AttributeError) as exc:
+                log.warning("radar file %s has unusable geometry: %s", key, exc)
         if not fields:
             continue
         comp = comp_grid.merge(fields)
