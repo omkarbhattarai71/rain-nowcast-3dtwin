@@ -1,8 +1,8 @@
 #!/bin/bash
-# Step 09 - deep models on one GPU. One array task per model, so they train in parallel:
-#   sbatch src/ailab/02_deep_gpu.sbatch                 # all models (array 0-7) on benchmark A
-#   sbatch --array=0 src/ailab/02_deep_gpu.sbatch       # SAMBA only
-#   BENCH=B sbatch --array=0-2 src/ailab/02_deep_gpu.sbatch   # benchmark B models (samba, mamba, gru)
+# Job 3 - step 09, deep models, one GPU per model. One array task per model, so they train in parallel:
+#   sbatch src/ailab/03_deep_gpu.sbatch                 # all models (array 0-7) on benchmark A
+#   sbatch --array=0 src/ailab/03_deep_gpu.sbatch       # SAMBA only
+#   BENCH=B sbatch --array=0-2 src/ailab/03_deep_gpu.sbatch   # benchmark B models (samba, mamba, gru)
 #SBATCH --job-name=rainnow-deep
 #SBATCH --output=logs/%x-%A_%a.out
 #SBATCH --gres=gpu:1

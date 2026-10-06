@@ -13,6 +13,7 @@ import pandas as pd
 from ..dataset import model_dir
 from ..features import feature_groups
 from ..models import gbm
+from . import Isolated
 from ._tabular_common import fit_and_predict, load_train_val
 from .step05_tabular import load_tabular, xyw
 
@@ -27,6 +28,7 @@ B_VARIANTS = {
 
 
 def run(cfg, args) -> None:
+    iso = Isolated("step07")
     for bench in args.bench:
         try:
             tr, va = load_train_val(cfg, bench)
@@ -45,9 +47,15 @@ def run(cfg, args) -> None:
         if args.models:
             models = {k: v for k, v in models.items() if k in args.models}
         for name, model in models.items():
-            fit_and_predict(cfg, bench, name, model, tr, va)
-            if name in ("lgbm_hurdle", "lgbm_B_all"):
-                shap_report(cfg, bench, name, model)
+            with iso.model(f"{bench}/{name}"):
+                fit_and_predict(cfg, bench, name, model, tr, va)
+            if name in ("lgbm_hurdle", "lgbm_B_all") and f"{bench}/{name}" not in iso.failed:
+                try:
+                    shap_report(cfg, bench, name, model)
+                except Exception:  # noqa: BLE001  (explanations are optional)
+                    log.exception("SHAP report for %s/%s failed", bench, name)
+        del tr, va
+    iso.finish()
 
 
 def shap_report(cfg, bench: str, name: str, model) -> None:

@@ -80,17 +80,26 @@ cp .env.example .env && nano .env          # AWS keys (and DMI_API_KEY if needed
 # build the container once (about 10 min)
 srun --mem=32G --cpus-per-task=8 singularity build --fakeroot rainnow.sif src/ailab/rainnow.def
 
-# submit everything as 4 dependent jobs (data+classical -> deep A / deep B on GPU -> evaluation)
+# submit everything: data -> classical models (5 CPU tasks) + deep models (1 GPU each) -> evaluation
 bash src/ailab/run_all.sh
 squeue --me                                  # monitor; logs in logs/
+
+# resume / partial runs
+bash src/ailab/run_all.sh --from-step step04_radar   # restart the data job at a step
+SKIP_DATA=1 bash src/ailab/run_all.sh                # data steps 01-05 already done
 ```
-Run single parts by hand, e.g. only SAMBA on benchmark A:
+Before a long run, the stress configuration runs every step on all stations with tiny models and
+short splits at the end of the data record (catches edge cases in minutes instead of hours):
+`python src/run.py all --config stress`.
+
+Run single parts by hand, e.g. only SAMBA on benchmark A, or only the state-space models:
 ```bash
-sbatch --array=0 src/ailab/02_deep_gpu.sbatch
+sbatch --array=0 src/ailab/03_deep_gpu.sbatch
+sbatch --array=4 src/ailab/02_classical.sbatch
 srun --gres=gpu:1 --mem=128G singularity exec --nv --env-file .env rainnow.sif python src/run.py step09_deep --bench A --models samba
 ```
 Any config value can be changed with `--set`, e.g. `--set deep.epochs=30 --set deep.d_model=128`.
-Resource notes: steps 01–08 need ~150–190 GB RAM for the full station set; step 04 downloads
+Resource notes: the data job and each classical task need up to ~160–190 GB RAM for the full station set; step 04 downloads
 ~3.9 GB of radar files; each deep model trains in one 12 h GPU job (early stopping usually earlier).
 If your AI-Lab account uses a specific partition or QoS, add `#SBATCH --partition=...` to the scripts.
 

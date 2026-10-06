@@ -46,6 +46,8 @@ def run(cfg, args) -> None:
                         w = sample_weights(df, cfg, part, split)
                         variants["_sampled"] = (w > 0, w)
                 for suffix, (m, w) in variants.items():
+                    if not m.any():
+                        continue                        # nothing to train/score in this part
                     out = feats[m].copy()
                     out.insert(0, "station_id", part.sid)
                     out["y"] = df["target"].to_numpy()[m]
@@ -55,7 +57,7 @@ def run(cfg, args) -> None:
                     out.reset_index().to_parquet(d / f"{part.sid}_{part.year}{suffix}.parquet", index=False)
                     if suffix == "":
                         n_rows += int(m.sum())
-                if split != "train":
+                if split != "train" and ev.any():
                     idx_rows.append(pd.DataFrame({
                         "station_id": part.sid, "time": df.index[ev],
                         "y_true": df["target"].to_numpy()[ev], "rain_now": df["rain_rt"].to_numpy()[ev],
@@ -76,7 +78,10 @@ def load_tabular(cfg, bench: str, split: str, sampled: bool = False, max_rows: i
         files = sorted(f for f in d.glob("*.parquet") if not f.stem.endswith("_sampled"))
     if not files:
         raise FileNotFoundError(f"no tabular files in {d}; run step05")
-    df = pd.concat([pd.read_parquet(f, columns=columns) for f in files], ignore_index=True)
+    frames = [x for x in (pd.read_parquet(f, columns=columns) for f in files) if len(x)]
+    if not frames:
+        raise FileNotFoundError(f"all tabular files in {d} are empty")
+    df = pd.concat(frames, ignore_index=True)
     if max_rows and len(df) > max_rows:
         # uniform subsample: relative weights (and hence calibration) are unchanged
         df = df.sample(max_rows, random_state=int(cfg.seed))
@@ -89,7 +94,9 @@ def iter_tabular(cfg, bench: str, split: str):
     for f in sorted(tab_dir(cfg, bench, split).glob("*.parquet")):
         if f.stem.endswith("_sampled"):
             continue
-        yield f.stem, pd.read_parquet(f).set_index("time")
+        df = pd.read_parquet(f)
+        if len(df):
+            yield f.stem, df.set_index("time")
 
 
 def xyw(df: pd.DataFrame):

@@ -28,6 +28,8 @@ def supervisor_truth(raw: pd.DataFrame, grid: pd.DatetimeIndex, use_1min: bool) 
     if use_1min and "precip_past1min" in raw and raw["precip_past1min"].notna().any():
         return raw["precip_past1min"].reindex(grid).fillna(0.0)
     s = pd.Series(0.0, index=grid)
+    if "precip_past10min" not in raw:
+        return s
     p10 = raw["precip_past10min"].dropna()
     for t, v in p10.items():
         block = pd.date_range(t - pd.Timedelta(minutes=9), t, freq="1min", tz="UTC").intersection(grid)
@@ -48,26 +50,40 @@ def run(cfg, args) -> None:
     s, e = period(cfg, "A", "test")
     rows = []
     for part in split_parts(cfg, "A", "test"):
-        raw = clean_raw(read_raw_csv(cfg.path("raw", "stations", f"{part.sid}{cfg.s3.station_csv_suffix}")), cfg)
-        raw = raw[(raw.index >= part.start - pd.Timedelta(minutes=10)) & (raw.index <= part.end + pd.Timedelta(minutes=10))]
-        tr = load_truth(cfg, part.sid, part.start, part.end + pd.Timedelta(minutes=1), ["precip", "valid", "p1_obs"])
-        grid = tr.index
-        sup = supervisor_truth(raw, grid, use_1min=True).to_numpy()
-        spread = supervisor_truth(raw, grid, use_1min=False).to_numpy()
-        ours = tr["precip"].to_numpy()
-        valid = tr["valid"].to_numpy() > 0
-        ok = valid[1:] & valid[:-1]
-        wet_ours = valid & (np.nan_to_num(ours) > 0)
-        rows.append({
-            "station_id": part.sid, "minutes": len(grid), "valid_frac": float(valid.mean()),
-            "our_wet_minutes": int(wet_ours.sum()),
-            "wet_minutes_labelled_dry_by_supervisor_truth": int((wet_ours & (sup == 0)).sum()),
-            "supervisor_minutes_filled_with_zero": int(tr["p1_obs"].isna().sum()),
-            "mm_ours": float(np.nansum(ours[valid])), "mm_supervisor": float(sup.sum()),
-            **{f"pers_ours_{k}": v for k, v in _persistence_scores(ours[1:][ok], ours[:-1][ok]).items()},
-            **{f"pers_supervisor_{k}": v for k, v in _persistence_scores(sup[1:], sup[:-1]).items()},
-            **{f"pers_spread10_{k}": v for k, v in _persistence_scores(spread[1:], spread[:-1]).items()},
-        })
+        try:
+            rows.append(_truth_row(cfg, part))
+        except Exception:  # noqa: BLE001  (one bad station must not stop the audit)
+            log.exception("leakage audit: station %s skipped", part.sid)
+    if not rows:
+        log.warning("leakage audit: no test parts")
+        return
+    _finish(cfg, out, rows)
+
+
+def _truth_row(cfg, part) -> dict:
+    raw = clean_raw(read_raw_csv(cfg.path("raw", "stations", f"{part.sid}{cfg.s3.station_csv_suffix}")), cfg)
+    raw = raw[(raw.index >= part.start - pd.Timedelta(minutes=10)) & (raw.index <= part.end + pd.Timedelta(minutes=10))]
+    tr = load_truth(cfg, part.sid, part.start, part.end + pd.Timedelta(minutes=1), ["precip", "valid", "p1_obs"])
+    grid = tr.index
+    sup = supervisor_truth(raw, grid, use_1min=True).to_numpy()
+    spread = supervisor_truth(raw, grid, use_1min=False).to_numpy()
+    ours = tr["precip"].to_numpy()
+    valid = tr["valid"].to_numpy() > 0
+    ok = valid[1:] & valid[:-1]
+    wet_ours = valid & (np.nan_to_num(ours) > 0)
+    return {
+        "station_id": part.sid, "minutes": len(grid), "valid_frac": float(valid.mean()),
+        "our_wet_minutes": int(wet_ours.sum()),
+        "wet_minutes_labelled_dry_by_supervisor_truth": int((wet_ours & (sup == 0)).sum()),
+        "supervisor_minutes_filled_with_zero": int(tr["p1_obs"].isna().sum()),
+        "mm_ours": float(np.nansum(ours[valid])), "mm_supervisor": float(sup.sum()),
+        **{f"pers_ours_{k}": v for k, v in _persistence_scores(ours[1:][ok], ours[:-1][ok]).items()},
+        **{f"pers_supervisor_{k}": v for k, v in _persistence_scores(sup[1:], sup[:-1]).items()},
+        **{f"pers_spread10_{k}": v for k, v in _persistence_scores(spread[1:], spread[:-1]).items()},
+    }
+
+
+def _finish(cfg, out, rows) -> None:
     truth_df = pd.DataFrame(rows)
     truth_df.to_csv(out / "truth_comparison.csv", index=False)
     summ = {
@@ -78,7 +94,10 @@ def run(cfg, args) -> None:
         "persistence_csi_supervisor_truth": float(truth_df["pers_supervisor_csi"].median()),
         "persistence_csi_uniform_10min_spread": float(truth_df["pers_spread10_csi"].median()),
     }
-    summ |= _test_tuning_effect(cfg)
+    try:
+        summ |= _test_tuning_effect(cfg)
+    except Exception:  # noqa: BLE001
+        log.exception("leakage audit: tuning-effect experiment failed")
     rad = cfg.path("radar", "lookup_audit.csv", results=True)
     if rad.exists():
         summ["radar_lookup_audit"] = pd.read_csv(rad).to_dict(orient="records")
@@ -91,7 +110,7 @@ def _test_tuning_effect(cfg) -> dict:
     try:
         tr = load_tabular(cfg, "A", "train", max_rows=min(int(cfg.sampling.max_train_rows), 5_000_000))
         va = load_tabular(cfg, "A", "val", sampled=True)
-        te = load_tabular(cfg, "A", "test")
+        te = load_tabular(cfg, "A", "test", max_rows=10_000_000)   # uniform sample keeps the comparison fair
     except FileNotFoundError:
         return {}
     X, y, w = xyw(tr)
@@ -108,7 +127,7 @@ def _test_tuning_effect(cfg) -> dict:
             # supervisor protocol: threshold also picked on the evaluation data
             csi = max(categorical_scores(contingency(yt > 0, p >= t))["csi"] for t in np.linspace(0.05, 0.95, 37))
         else:
-            vf = load_tabular(cfg, "A", "val")                    # full validation rows, as in step 11
+            vf = load_tabular(cfg, "A", "val", max_rows=10_000_000)   # validation rows, as in step 11
             Xf, yf, _ = xyw(vf)
             thr = tune_threshold(b.predict(Xf, num_iteration=b.best_iteration), yf > 0)
             csi = categorical_scores(contingency(yt > 0, p >= thr))["csi"]

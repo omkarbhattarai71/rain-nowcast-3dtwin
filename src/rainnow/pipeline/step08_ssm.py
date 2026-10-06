@@ -12,6 +12,7 @@ import joblib
 import numpy as np
 
 from ..dataset import eval_mask, load_part, model_dir, pred_frame, split_parts, write_preds
+from . import Isolated
 from ..models.ssm_classic import KalmanModel, RegimeHMM, to_z
 
 log = logging.getLogger(__name__)
@@ -40,8 +41,10 @@ def _blocks(cfg, parts, rng):
         for b in range(n):
             sl = df.iloc[b * BLOCK:(b + 1) * BLOCK]
             cands.append((float((sl["rain_rt"] > 0).sum()) + 1.0, sl))
+        if n == 0 and len(df) >= 1440:            # short part (< 7 days): use it as one block
+            cands.append((float((df["rain_rt"] > 0).sum()) + 1.0, df))
     if not cands:
-        return []
+        raise RuntimeError("SSM: no training data (no benchmark-A train part with >= 1 day of minutes)")
     k = max(1, min(len(cands), int(cfg.models.ssm_fit_rows) // BLOCK))
     w = np.array([c[0] for c in cands])
     pick = rng.choice(len(cands), size=k, replace=False, p=w / w.sum())
@@ -59,13 +62,12 @@ def run(cfg, args) -> None:
     log.info("SSM fit data: %d blocks (%d minutes)", len(blocks), sum(len(b) for b in blocks))
     targets = {"A": ("val", "test"), "B": ("val", "test")}
 
+    iso = Isolated("step08")
     fitted = {}
     for name in names:
-        if name == "hmm_switch":
-            fitted[name] = _fit_hmm(cfg, blocks, rng)
-        else:
-            fitted[name] = _fit_kalman(name, blocks)
-        joblib.dump(fitted[name], model_dir(cfg, "A", name) / "model.joblib")
+        with iso.model(name):
+            fitted[name] = _fit_hmm(cfg, blocks, rng) if name == "hmm_switch" else _fit_kalman(name, blocks)
+            joblib.dump(fitted[name], model_dir(cfg, "A", name) / "model.joblib")
 
     for bench, splits in targets.items():
         for split in splits:
@@ -73,8 +75,10 @@ def run(cfg, args) -> None:
             if not parts:
                 continue
             for name, model in fitted.items():
-                frames = _predict(cfg, name, model, parts, bench)
-                write_preds(cfg, bench, name if bench == "A" else f"A__{name}", split, frames)
+                with iso.model(f"{bench}/{split}/{name}"):
+                    frames = _predict(cfg, name, model, parts, bench)
+                    write_preds(cfg, bench, name if bench == "A" else f"A__{name}", split, frames)
+    iso.finish()
 
 
 def _fit_kalman(name, blocks):

@@ -1,0 +1,46 @@
+# Stress test: ALL stations, every step, tiny models, short splits placed at the edges of the data
+# (end of the 2025 record, where stations stop reporting). Finds edge cases before a long AI-Lab run.
+#   python src/run.py step02 step03 step04 step05 step06 step07 step08 step09 step10 step11 step12 step13 --config stress
+paths:
+  data: data
+  results: results_stress
+
+splits:
+  A:
+    train: ["2020-07-01", "2020-07-11"]
+    val:   ["2024-07-01", "2024-07-06"]
+    test:  ["2025-11-24", "2025-12-01"]
+  B:
+    train: ["2025-11-20", "2025-11-25"]
+    val:   ["2025-11-25", "2025-11-27"]
+    test:  ["2025-11-27", "2025-12-04"]     # station data ends 2025-11-29 ~09 UTC: crosses the end
+
+models:
+  gbm:
+    num_boost_round: 40
+    early_stopping: 10
+    shap_rows: 5000
+  ssm_fit_rows: 200000
+  hmm_em_iters: 3
+
+deep:
+  window: 60
+  batch_size: 64
+  batch_size_by_model: {samba: 32, samba_nonlinear: 32, samba_temporal_only: 32, patchtst: 32, mamba: 32}
+  eval_batch_size: 4096
+  eval_batch_size_by_model: {samba: 512, samba_nonlinear: 512, samba_temporal_only: 512, patchtst: 512, mamba: 1024}
+  epochs: 1
+  max_steps_per_epoch: 5
+  val_steps: 3
+  d_model: 8
+  d_state: 4
+  expand: 1
+  n_layers: 1
+  device: cpu
+  num_threads: 6
+
+radar:
+  workers: 8
+
+evaluation:
+  bootstrap: 20

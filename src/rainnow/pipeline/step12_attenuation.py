@@ -57,7 +57,7 @@ def run(cfg, args) -> None:
             for s in scen:
                 lat_s = float(np.median(la))
                 a_obs = scenario_attenuation(p["y_true"].to_numpy(), s, lat_s, cfg.attenuation.rain_height_km)
-                a_hat = scenario_attenuation(p["y_hat"].to_numpy(), s, lat_s, cfg.attenuation.rain_height_km)
+                a_hat = scenario_attenuation(np.nan_to_num(p["y_hat"].to_numpy()), s, lat_s, cfg.attenuation.rain_height_km)
                 q = p["q90"].to_numpy()
                 a_q = scenario_attenuation(q, s, lat_s, cfg.attenuation.rain_height_km) if np.isfinite(q).all() else None
                 e = a_hat - a_obs

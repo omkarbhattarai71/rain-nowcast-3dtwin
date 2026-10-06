@@ -78,13 +78,28 @@ def evaluate_bench(cfg, bench: str) -> None:
     (out / "thresholds.json").write_text(json.dumps(thr, indent=1))
 
     # ---------------------------------------------------------------- common test rows
+    # a model with incomplete test predictions (crashed job, missing parts) would shrink the common
+    # rows of every model; models covering < min_coverage of the index are excluded and reported
+    min_cov = float(cfg.evaluation.get("min_coverage", 0.9))
     common = np.ones(len(idx_t), bool)
+    kept, dropped = [], {}
     for m in models:
-        k = pd.read_parquet(pdir / m / "test.parquet", columns=keys)
+        k = pd.read_parquet(pdir / m / "test.parquet", columns=keys).drop_duplicates()
         rows = idx_t.merge(k, on=keys)["row"].to_numpy()
+        cov = len(rows) / max(len(idx_t), 1)
+        if cov < min_cov:
+            dropped[m] = round(cov, 4)
+            continue
         present = np.zeros(len(idx_t), bool)
         present[rows] = True
         common &= present
+        kept.append(m)
+    if dropped:
+        log.warning("bench %s: models excluded (test coverage < %.0f%%): %s", bench, 100 * min_cov, dropped)
+        (out / "excluded_models.json").write_text(json.dumps(dropped, indent=1))
+    models = kept
+    if not models or not common.any():
+        raise FileNotFoundError(f"no model covers the bench {bench} test rows")
     base = idx_t[common].reset_index(drop=True)
     log.info("bench %s: %d models, %d common test rows (of %d)", bench, len(models), len(base), len(idx_t))
     y = base["y_true"].to_numpy()
@@ -99,6 +114,7 @@ def evaluate_bench(cfg, bench: str) -> None:
         p = base[keys].merge(pd.read_parquet(pdir / m / "test.parquet"), on=keys, how="left")
         pr, yh, q = p["p_rain"].to_numpy(), p["y_hat"].to_numpy(), p["q90"].to_numpy()
         pr = np.nan_to_num(pr)
+        yh = np.nan_to_num(yh)
         wide[f"{m}__p_rain"], wide[f"{m}__y_hat"] = pr.astype("float32"), yh.astype("float32")
         fc = pr >= thr[m]["rain"]
         r = {"model": m, "family": family(m), "rows": len(y)}
@@ -161,7 +177,10 @@ def evaluate_bench(cfg, bench: str) -> None:
     pd.DataFrame(pairs).to_csv(out / "pairwise.csv", index=False)
 
     _best_model_json(cfg, bench, met, out)
-    _figures(cfg, met, pd.concat(rel_rows), wide, out, models, thr)
+    try:
+        _figures(cfg, met, pd.concat(rel_rows), wide, out, models, thr)
+    except Exception:  # noqa: BLE001  (figures are optional; never lose the metrics because of a plot)
+        log.exception("bench %s: figures failed", bench)
     _report(cfg, bench, met, pd.DataFrame(pairs), len(base), out)
     log.info("bench %s top 10 by CSI:\n%s", bench, met[["model", "csi_rain", "pod_rain", "far_rain", "rmse",
                                                          "skill_rmse_vs_persistence", "onset_csi"]].head(10).to_string(index=False))
@@ -259,7 +278,10 @@ def _published(cfg) -> str:
         return "_not downloaded_"
     lines = []
     for f in sorted(pub.glob("*.csv")):
-        df = pd.read_csv(f)
+        try:
+            df = pd.read_csv(f)
+        except Exception:  # noqa: BLE001
+            continue
         cols = [c for c in ("precision", "recall", "f1", "pr_auc", "csi", "pod", "far") if c in df.columns]
         if cols:
             lines.append(f"* `{f.name}`: " + ", ".join(f"{c}={df[c].mean():.3f}" for c in cols)

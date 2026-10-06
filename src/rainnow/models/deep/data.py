@@ -26,10 +26,15 @@ _NB_RAIN = {c for c in ALL_CHANNELS if c.startswith("nb_r") or c in
 EXCLUDED = {"rain_avail"}   # reporting artefact, not a weather signal (see features.py)
 
 
-def deep_channels(bench: str, sample: pd.DataFrame | None = None) -> list[str]:
+def deep_channels(bench: str, sample=None) -> list[str]:
+    """Input channels; for benchmark B also every radar/nowcast column found in the sample frame(s)."""
     chans = [c for c in ALL_CHANNELS if c not in EXCLUDED]
     if bench == "B" and sample is not None:
-        chans += [c for c in sample.columns if c.startswith(("radar_", "nowcast_"))]
+        frames = sample if isinstance(sample, (list, tuple)) else [sample]
+        extra = sorted({c for f in frames for c in f.columns if c.startswith(("radar_", "nowcast_"))})
+        if not extra:
+            log.warning("benchmark B: no radar/nowcast columns found - radar variant equals station-only")
+        chans += extra
     return chans
 
 
@@ -40,7 +45,9 @@ def _is_rain_like(c: str) -> bool:
 def fit_scaler(frames: list[pd.DataFrame], channels: list[str]) -> dict:
     """Mean/std for non-rain channels from training frames."""
     sc = {}
-    cat = pd.concat([f[channels].sample(min(len(f), 50000), random_state=0) for f in frames])
+    # reindex: a station without radar files lacks the radar columns (filled with NaN here)
+    cat = pd.concat([f.reindex(columns=channels).sample(min(len(f), 50000), random_state=0)
+                     for f in frames if len(f)])
     for c in channels:
         if _is_rain_like(c):
             sc[c] = {"type": "rain", "div": RAIN_LIKE.get(c, 10 if c.startswith("nb_") else 1)}

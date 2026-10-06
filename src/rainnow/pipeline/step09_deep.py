@@ -12,6 +12,7 @@ import logging
 from ..config import set_seed
 from ..dataset import load_part, model_dir, preds_path, split_parts, write_preds
 from ..models.deep.data import WindowStore, deep_channels, fit_scaler
+from . import Isolated
 from ..models.deep.train import predict_store, train_model
 
 log = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def _frames(cfg, parts, bench):
 
 
 def run(cfg, args) -> None:
+    iso = Isolated("step09")
     for bench in args.bench:
         parts = {s: split_parts(cfg, bench, s) for s in ("train", "val", "test")}
         if not all(parts.values()):
@@ -32,7 +34,7 @@ def run(cfg, args) -> None:
             variants = {"": deep_channels("A")}
             names = list(cfg.deep.models)
         else:
-            variants = {"_B_station": deep_channels("A"), "_B_radar": deep_channels("B", frames["train"][0])}
+            variants = {"_B_station": deep_channels("A"), "_B_radar": deep_channels("B", frames["train"])}
             names = list(cfg.deep.models_B)
         if args.models:
             names = [n for n in names if n in args.models]
@@ -52,19 +54,23 @@ def run(cfg, args) -> None:
                 if all(p.exists() for p in done) and not getattr(args, "force", False):
                     log.info("%s/%s already has predictions - skipping (use --force to retrain)", bench, full)
                     continue
-                out = model_dir(cfg, bench, full)
-                meta = {"bench": bench, "channels": channels, "scaler": scaler, "window": int(cfg.deep.window)}
-                net = train_model(name, cfg, st_tr, st_vs, out, meta)
-                write_preds(cfg, bench, full, "val", [predict_store(net, st_ve, cfg, name)])
-                write_preds(cfg, bench, full, "test", [predict_store(net, st_te, cfg, name)])
-                for split, st in transfer.items():
-                    write_preds(cfg, "B", f"A__{full}", split, [predict_store(net, st, cfg, name)])
-                del net
+                with iso.model(f"{bench}/{full}"):
+                    if len(st_tr) == 0 or len(st_vs) == 0:
+                        raise RuntimeError(f"no training/validation windows ({len(st_tr)}/{len(st_vs)})")
+                    out = model_dir(cfg, bench, full)
+                    meta = {"bench": bench, "channels": channels, "scaler": scaler, "window": int(cfg.deep.window)}
+                    net = train_model(name, cfg, st_tr, st_vs, out, meta)
+                    write_preds(cfg, bench, full, "val", [predict_store(net, st_ve, cfg, name)])
+                    write_preds(cfg, bench, full, "test", [predict_store(net, st_te, cfg, name)])
+                    for split, st in transfer.items():
+                        write_preds(cfg, "B", f"A__{full}", split, [predict_store(net, st, cfg, name)])
+                    del net
                 gc.collect()
             del st_tr, st_vs, st_ve, st_te, transfer
             gc.collect()
         (cfg.path(f"bench{bench}", "models", results=True, mkdir=True) / "deep_channels.json").write_text(
             json.dumps({k: v for k, v in variants.items()}, indent=1))
+    iso.finish()
 
 
 def _transfer_stores(cfg, channels, scaler) -> dict:

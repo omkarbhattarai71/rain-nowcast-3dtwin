@@ -57,9 +57,16 @@ def run(cfg, args) -> None:
             continue
         log.info("bench %s hybrid candidates: %s", bench, list(cands))
         base = BASE_GBM[bench]
+        # hybrids are optional extras: a failure is logged and must not stop evaluation (step 11)
         if base in cands:
-            _gbm_kalman(cfg, bench, *cands[base], fit_days)
-        _regime_and_stack(cfg, bench, cands, fit_days)
+            try:
+                _gbm_kalman(cfg, bench, *cands[base], fit_days)
+            except Exception:  # noqa: BLE001
+                log.exception("bench %s: hyb_gbm_kalman failed - skipped", bench)
+        try:
+            _regime_and_stack(cfg, bench, cands, fit_days)
+        except Exception:  # noqa: BLE001
+            log.exception("bench %s: hyb_regime / hyb_stack failed - skipped", bench)
 
 
 def _resid_corrections(df: pd.DataFrame, model) -> np.ndarray:
@@ -75,9 +82,19 @@ def _resid_corrections(df: pd.DataFrame, model) -> np.ndarray:
     return out
 
 
+def _enough(df, what) -> bool:
+    wet = int((df["y_true"] > 0).sum()) if len(df) else 0
+    if len(df) < 100 or wet < 5 or wet == len(df):
+        log.warning("%s: too little data to fit (%d rows, %d wet) - skipped", what, len(df), wet)
+        return False
+    return True
+
+
 def _gbm_kalman(cfg, bench, val, test, fit_days):
     vf = val[val["day"].isin(fit_days)].reset_index(drop=True)
     vs = val[~val["day"].isin(fit_days)].reset_index(drop=True)
+    if not _enough(vf, f"{bench}/hyb_gbm_kalman") or vs.empty or test.empty:
+        return
     blocks = []
     for _, g in vf.groupby("station_id"):
         g = g.sort_values("time")
@@ -107,6 +124,8 @@ def _regime_and_stack(cfg, bench, cands, fit_days):
         base_t = base_t.merge(test[m][keys + ["p_rain", "y_hat"]].rename(columns={"p_rain": f"{m}__p", "y_hat": f"{m}__y"}), on=keys)
     fit = base_v[base_v["day"].isin(fit_days)]
     sel = base_v[~base_v["day"].isin(fit_days)]
+    if not _enough(fit, f"{bench}/hyb_regime+stack") or sel.empty or base_t.empty:
+        return
     cals = {m: ProbCalibrator().fit(fit[f"{m}__p"].fillna(0), fit["y_true"] > 0) for m in names}
 
     # regime switch
@@ -117,7 +136,7 @@ def _regime_and_stack(cfg, bench, cands, fit_days):
         obs = fit.loc[dry_f, "y_true"] > 0
         thr = tune_threshold(s, obs)
         csi = categorical_scores(contingency(obs, s >= thr))["csi"]
-        rmse = float(np.sqrt(np.mean((fit.loc[wet_f, f"{m}__y"] - fit.loc[wet_f, "y_true"]) ** 2)))
+        rmse = float(np.sqrt(np.mean((fit.loc[wet_f, f"{m}__y"] - fit.loc[wet_f, "y_true"]) ** 2))) if wet_f.any() else np.inf
         if csi > sd:
             best_dry, sd = m, csi
         if rmse < sw:

@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -64,10 +65,26 @@ def split_parts(cfg, bench: str, split: str) -> list[Part]:
             continue
         if covered is not None and r.station_id not in covered:
             continue
-        if not channel_path(cfg, r.station_id, r.year).exists():
+        cp = channel_path(cfg, r.station_id, r.year)
+        if not cp.exists():
+            continue
+        # a station can stop reporting before the split period (e.g. data ending in August while
+        # the split is October): such parts would yield empty frames downstream, so drop them here
+        if _valid_rows(str(cp), cp.stat().st_mtime, s.value, e.value) < int(cfg.get("min_part_rows", 60)):
             continue
         parts.append(Part(r.station_id, int(r.year), s, e))
+    if not parts:
+        log.warning("bench %s split %s: no station-year has valid target rows in %s - %s", bench, split, start, end)
     return parts
+
+
+@lru_cache(maxsize=4096)
+def _valid_rows(path: str, mtime: float, start_ns: int, end_ns: int) -> int:
+    """Number of minutes with a valid target inside [start, end) of a channel file (cached)."""
+    df = pd.read_parquet(path, columns=["time", "target_valid"])
+    t = pd.DatetimeIndex(df["time"]).as_unit("ns").asi8
+    m = (t >= start_ns) & (t < end_ns)
+    return int((df["target_valid"].to_numpy()[m] > 0).sum())
 
 
 def channel_path(cfg, sid: str, year: int) -> Path:
@@ -144,6 +161,7 @@ def model_dir(cfg, bench: str, model: str) -> Path:
 
 def write_preds(cfg, bench: str, model: str, split: str, frames: list[pd.DataFrame]) -> None:
     """Standard prediction file: station_id, time, p_rain, y_hat, q90 (NaN if not provided)."""
+    frames = [f for f in frames if f is not None and len(f)]
     if not frames:
         log.warning("no predictions for %s/%s", model, split)
         return

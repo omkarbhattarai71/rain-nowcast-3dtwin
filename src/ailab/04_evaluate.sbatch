@@ -1,11 +1,12 @@
 #!/bin/bash
-# Steps 10-13 after all models are trained: hybrids, evaluation, attenuation, leakage audit.
-#   sbatch --dependency=afterok:<deep_job_id> src/ailab/03_evaluate.sbatch
+# Job 4 - steps 10-13 after all models: hybrids, evaluation, attenuation, leakage audit.
+# Runs even if some model jobs failed (afterany); missing models are reported, not fatal.
+#   sbatch --dependency=afterany:<model job ids> src/ailab/04_evaluate.sbatch
 #SBATCH --job-name=rainnow-eval
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=192G
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 
 set -euo pipefail
 mkdir -p logs
