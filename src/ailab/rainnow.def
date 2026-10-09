@@ -9,6 +9,15 @@ From: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
     apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
     python -m pip install --no-cache-dir -r /opt/rainnow/requirements.txt
     python -m pip install --no-cache-dir -r /opt/rainnow/requirements-optional.txt || echo "pysteps optional: skipped"
+    # Fused CUDA selective-scan kernel from the official Mamba package (state-spaces/mamba).
+    # Prebuilt wheel for torch 2.5 / CUDA 12 / Python 3.11; falls back to pip; if both fail the
+    # pipeline uses its own PyTorch scan (slower, same results). Check after the build with:
+    #   singularity exec --nv rainnow.sif python -c "import mamba_ssm; print(mamba_ssm.__version__)"
+    python -m pip install --no-cache-dir packaging ninja einops "transformers<4.47"
+    python -m pip install --no-cache-dir --no-deps \
+        "https://github.com/state-spaces/mamba/releases/download/v2.2.4/mamba_ssm-2.2.4+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl" \
+      || python -m pip install --no-cache-dir --no-build-isolation "mamba-ssm==2.2.4" \
+      || echo "mamba-ssm not installed: the PyTorch scan will be used"
 
 %environment
     export PYTHONUNBUFFERED=1
@@ -19,6 +28,6 @@ From: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 %help
     rainnow training container. Build on AI-Lab from the repository root:
-        srun --mem=32G --cpus-per-task=8 singularity build --fakeroot rainnow.sif src/ailab/rainnow.def
+        srun --mem=32G --cpus-per-task=8 --time=01:00:00 singularity build --fakeroot rainnow.sif src/ailab/rainnow.def
     Run:
         srun --gres=gpu:1 singularity exec --nv rainnow.sif python src/run.py step09_deep --bench A

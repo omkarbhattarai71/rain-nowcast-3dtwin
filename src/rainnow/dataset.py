@@ -163,8 +163,11 @@ def write_preds(cfg, bench: str, model: str, split: str, frames: list[pd.DataFra
     """Standard prediction file: station_id, time, p_rain, y_hat, q90 (NaN if not provided)."""
     frames = [f for f in frames if f is not None and len(f)]
     if not frames:
-        log.warning("no predictions for %s/%s", model, split)
-        return
+        # still write an (empty) file: it records that this split was processed, so resumable steps
+        # do not redo the model forever; evaluation treats it as "no coverage"
+        log.warning("no predictions for %s/%s (empty file written)", model, split)
+        frames = [pd.DataFrame({"station_id": pd.Series(dtype=str),
+                                "time": pd.Series(dtype="datetime64[ns, UTC]")})]
     df = pd.concat(frames, ignore_index=True)
     for c in ("p_rain", "y_hat", "q90"):
         if c not in df:

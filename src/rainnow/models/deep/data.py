@@ -82,12 +82,15 @@ class WindowStore:
         self.w: list[np.ndarray] = []
         self.times: list[pd.DatetimeIndex] = []
         self.sids: list[str] = []
+        self.part_keys: list[str] = []          # "<sid>_<year>": unit of resumable prediction files
         self.rows: np.ndarray = np.zeros((0, 2), dtype="int64")   # (part_idx, position)
         self.weights: np.ndarray = np.zeros(0, dtype="float32")
 
     @classmethod
     def build(cls, cfg, parts: list[Part], bench: str, split: str, channels, scaler, train_like: bool,
-              frames: list[pd.DataFrame] | None = None):
+              frames: list[pd.DataFrame] | None = None, day_frac: float = 1.0):
+        """day_frac < 1 keeps a fixed, deterministic subset of days (used for validation predictions,
+        which only serve threshold tuning); the test split is always complete."""
         st = cls(int(cfg.deep.window))
         rows, wts = [], []
         dtype = cfg.deep.store_dtype
@@ -96,16 +99,24 @@ class WindowStore:
             w = sample_weights(df, cfg, part, split) if train_like else eval_mask(df).astype("float32")
             pos = np.where(w > 0)[0]
             pos = pos[pos >= st.L - 1]
+            if day_frac < 1.0 and len(pos):
+                days = df.index[pos].normalize().as_unit("ns").asi8 // 86_400_000_000_000
+                pos = pos[((days * 2654435761) % 1000) < int(1000 * day_frac)]
             st.X.append(transform(df, channels, scaler).astype(dtype))
             st.y.append(np.nan_to_num(df["target"].to_numpy(dtype="float32")))
             st.times.append(df.index)
             st.sids.append(part.sid)
+            st.part_keys.append(f"{part.sid}_{part.year}")
             rows.append(np.c_[np.full(len(pos), len(st.X) - 1), pos])
             wts.append(w[pos])
         if rows:
             st.rows = np.concatenate(rows).astype("int64")
             st.weights = np.concatenate(wts).astype("float32")
-        log.info("WindowStore %s/%s: %d parts, %d windows", bench, split, len(parts), len(st.rows))
+        if day_frac < 1.0 and len(st.rows) == 0 and parts:
+            # a very short period can contain none of the selected days: use all days instead
+            return cls.build(cfg, parts, bench, split, channels, scaler, train_like, frames, day_frac=1.0)
+        log.info("WindowStore %s/%s: %d parts, %d windows%s", bench, split, len(parts), len(st.rows),
+                 f" ({day_frac:.0%} of days)" if day_frac < 1 else "")
         return st
 
     def __len__(self):
@@ -134,3 +145,7 @@ class WindowStore:
             sid[m] = self.sids[p]
             ns[m] = self.times[p].as_unit("ns").asi8[sel[m, 1]]
         return pd.DataFrame({"station_id": sid, "time": pd.to_datetime(ns, utc=True)})
+
+    def part_index(self, p: int) -> np.ndarray:
+        """Row indices (into self.rows) of the windows that belong to part p."""
+        return np.where(self.rows[:, 0] == p)[0]

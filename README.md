@@ -1,6 +1,9 @@
 # rain-nowcast-3dtwin
 Minute‑Ahead Rainfall Nowcasting for Rain‑Aware 3D Network Digital Twins
 
+> **Start here:** [GuideToRun.md](GuideToRun.md) (how to run everything, laptop → AI-Lab → Docker → deployment)
+> · [update.md](update.md) (current status and next steps on AI-Lab)
+
 # To authenticate github 
 ssh -T -p 443 git@ssh.github.com
 

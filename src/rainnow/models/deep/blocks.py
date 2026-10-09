@@ -6,12 +6,16 @@ patches), so the sequential scan is cheap.
 """
 from __future__ import annotations
 
+import logging
 import math
+import os
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+log = logging.getLogger(__name__)
 
 _VECTOR_LIMIT = 3e8   # elements; above this, discretise step by step to save memory
 
@@ -23,7 +27,62 @@ def _flush(h):
     return torch.where(h.abs() < _TINY, torch.zeros_like(h), h)
 
 
+# --------------------------------------------------------------------------- fused CUDA kernel (optional)
+# On a GPU with the `mamba-ssm` package (the official Mamba implementation, Gu & Dao), the scan runs as one
+# fused CUDA kernel that keeps the state in on-chip memory: typically 10-50x faster than the Python loop
+# below. It is verified against the reference loop once per process and used only if both agree.
+_FAST = {"checked": False, "fn": None}
+
+
+def _fast_scan_fn():
+    if _FAST["checked"]:
+        return _FAST["fn"]
+    _FAST["checked"] = True
+    if os.environ.get("RAINNOW_FAST_SCAN", "1") == "0" or not torch.cuda.is_available():
+        return None
+    try:
+        from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+    except Exception as exc:  # noqa: BLE001
+        log.info("mamba-ssm CUDA kernel not available (%s): using the PyTorch scan", type(exc).__name__)
+        return None
+    try:
+        g = torch.Generator(device="cuda").manual_seed(0)
+        b, l, d, n = 3, 37, 16, 8
+        u = torch.randn(b, l, d, device="cuda", generator=g)
+        delta = F.softplus(torch.randn(b, l, d, device="cuda", generator=g))
+        A = -torch.exp(torch.randn(d, n, device="cuda", generator=g))
+        Bm, Cm = torch.randn(b, l, n, device="cuda", generator=g), torch.randn(b, l, n, device="cuda", generator=g)
+        D = torch.randn(d, device="cuda", generator=g)
+        ref = selective_scan_ref(u, delta, A, Bm, Cm, D)
+        fast = _call_fused(selective_scan_fn, u, delta, A, Bm, Cm, D)
+        err = (fast - ref).abs().max().item() / (ref.abs().max().item() + 1e-6)
+        if err > 1e-3:
+            log.warning("mamba-ssm kernel disagrees with the reference scan (rel. err %.2e): not used", err)
+            return None
+        log.info("using the fused mamba-ssm CUDA selective scan (verified, rel. err %.1e)", err)
+        _FAST["fn"] = selective_scan_fn
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mamba-ssm kernel self-check failed (%s): using the PyTorch scan", exc)
+    return _FAST["fn"]
+
+
+def _call_fused(fn, u, delta, A, B, C, D):
+    """Our layout (b, l, d) / (b, l, n) -> kernel layout (b, d, l) / (b, n, l) and back."""
+    y = fn(u.transpose(1, 2).contiguous(), delta.transpose(1, 2).contiguous(), A.contiguous(),
+           B.transpose(1, 2).contiguous(), C.transpose(1, 2).contiguous(), D.contiguous())
+    return y.transpose(1, 2)
+
+
 def selective_scan(u, delta, A, B, C, D):
+    """Selective scan; uses the fused CUDA kernel when available and verified, else the reference loop."""
+    if u.is_cuda:
+        fn = _fast_scan_fn()
+        if fn is not None:
+            return _call_fused(fn, u, delta, A, B, C, D)
+    return selective_scan_ref(u, delta, A, B, C, D)
+
+
+def selective_scan_ref(u, delta, A, B, C, D):
     """u, delta: (b, l, d); A: (d, n); B, C: (b, l, n); D: (d,). Returns (b, l, d).
 
     The state decays through exp(delta*A) and would otherwise underflow into subnormal floats,

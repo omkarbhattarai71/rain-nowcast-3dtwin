@@ -109,6 +109,9 @@ deep:
   eval_batch_size_by_model: {samba: 1024, samba_nonlinear: 1024, samba_temporal_only: 1024, patchtst: 1024, mamba: 2048}
   expand: 2
   eval_batch_size: 8192
+  # validation predictions only tune thresholds / fit hybrids: a fixed 30 % of the days is enough
+  # (identical days for every model); the test split is always predicted completely
+  val_pred_day_frac: 0.3
   epochs: 20
   max_steps_per_epoch: 3000
   val_steps: 300
